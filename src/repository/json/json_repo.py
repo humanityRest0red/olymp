@@ -1,18 +1,15 @@
-import time
 from datetime import datetime
 import json
 import os
+import time
 
-from domain import Student
+from domain import Purchase, Student, TaskReport
 
 class JsonRepository:
-    """Хранилище всех данных в hackatonusers.json."""
-
-    def __init__(self, path: str = "hackatonusers.json"):
+    def __init__(self, path):
         self.path = path
         self._ensure_file()
 
-    # ---------- служебное ----------
     def _ensure_file(self):
         if not os.path.exists(self.path):
             self._write({
@@ -28,7 +25,6 @@ class JsonRepository:
                 data = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
             data = {}
-        # гарантируем структуру
         data.setdefault("users", {})
         data.setdefault("task_reports", [])
         data.setdefault("purchases", [])
@@ -43,87 +39,76 @@ class JsonRepository:
         data["counters"][key] = data["counters"].get(key, 0) + 1
         return data["counters"][key]
 
-    # ---------- users ----------
-    def get_student_by_id(self, user_id):
-        data = self._read()["users"].get(str(user_id))
-        if not data:
-            return None
-        return Student(
-            user_id=int(data["user_id"]),
-            first_name=data["first_name"],
-            last_name=data["last_name"],
-            school=data["school"],
-            class_name=data["class"],
-            balance=data.get("balance", 0),
-            level=data.get("level", "Нуб"),
-            xp=data.get("xp", 0),
-            xp_next=data.get("xp_next", 100),
-        )
-
-    def save_student(self, user: Student):
+    def get_user(self, user_id) -> Student | None:
         data = self._read()
-        data["users"][str(user.user_id)] = {
-            "user_id": user.user_id,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "school": user.school,
-            "class": user.class_name,
-            "balance": user.balance,
-            "level": user.level,
-            "xp": user.xp,
-            "xp_next": user.xp_next,
-        }
+        u = data["users"].get(str(user_id))
+        if u:
+            u['class_name'] = u.pop('class', '')
+            return Student(**u)
+        return None
+
+    def save_user(self, user: Student):
+        data = self._read()
+        u_dict = asdict(user)
+        u_dict['class'] = u_dict.pop('class_name')
+        data["users"][str(user.user_id)] = u_dict
         self._write(data)
 
-    def update_balance(self, user_id, delta):
-        user = self.get_student_by_id(user_id)
-        if user is not None:
-            user.change_balance(delta)
-            self.save_student(user)
+    def update_user(self, user: Student):
+        self.save_user(user)
 
-    def update_progress(self, user_id, add_xp: int, add_balance: int = 0):
-        user = self.get_student_by_id(user_id)
-        if user is not None:
-            user.add_progress(add_xp, add_balance)
-            self.save_student(user)
-
-    # ---------- task_reports ----------
-    def create_report(self, user_id, task_id, task_name, report_type,
-                      report_text=None, report_file=None):
+    def get_top_balance(self, limit=10) -> list[Student]:
         data = self._read()
-        rid = self._next_id(data, "report_id")
-        data["task_reports"].append({
-            "id": rid,
-            "user_id": int(user_id),
-            "task_id": task_id,
-            "task_name": task_name,
-            "report_type": report_type,
-            "report_text": report_text,
-            "report_file": report_file,
-            "status": "pending",
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "reviewed_at": None,
-        })
-        self._write(data)
-        return rid
+        users = []
+        for u in data["users"].values():
+            d = u.copy()
+            d['class_name'] = d.pop('class', '')
+            users.append(Student(**d))
+        users.sort(key=lambda x: x.balance, reverse=True)
+        return users[:limit]
 
-    def get_report(self, report_id):
+    def get_top_tasks(self, limit=10) -> list[tuple]:
+        data = self._read()
+        counts = {}
+        for r in data["task_reports"]:
+            if r["status"] == "approved":
+                counts[r["user_id"]] = counts.get(r["user_id"], 0) + 1
+
+        result = []
+        for uid, count in counts.items():
+            u = data["users"].get(str(uid))
+            if u:
+                d = u.copy()
+                d['class_name'] = d.pop('class', '')
+                result.append((Student(**d), count))
+
+        result.sort(key=lambda x: x[1], reverse=True)
+        return result[:limit]
+
+    def create_report(self, report: TaskReport) -> int:
+        data = self._read()
+        report.id = self._next_id(data, "report_id")
+        data["task_reports"].append(asdict(report))
+        self._write(data)
+        return report.id
+
+    def get_report(self, report_id) -> TaskReport | None:
         data = self._read()
         for r in data["task_reports"]:
             if r["id"] == int(report_id):
-                return r
+                return TaskReport(**r)
         return None
 
-    def get_pending_reports(self):
+    def get_pending_reports(self) -> list[TaskReport]:
         data = self._read()
-        return [r for r in data["task_reports"] if r["status"] == "pending"][::-1]
+        return [TaskReport(**r) for r in data["task_reports"] if r["status"] == "pending"][::-1]
 
-    def get_report_history(self, limit=50):
+    def get_report_history(self, limit=50) -> list[TaskReport]:
         data = self._read()
-        hist = [r for r in data["task_reports"] if r["status"] != "pending"]
+        hist = [TaskReport(**r) for r in data["task_reports"] if r["status"] != "pending"]
         return hist[::-1][:limit]
 
-    def set_report_status(self, report_id, status: str):
+    def set_report_status(self, report_id, status: str) -> None:
         data = self._read()
         for r in data["task_reports"]:
             if r["id"] == int(report_id):
@@ -132,14 +117,12 @@ class JsonRepository:
                 break
         self._write(data)
 
-    def has_recent_rejected(self, user_id, task_id, cooldown=300):
+    def has_recent_rejected(self, user_id, task_id, cooldown=300) -> (bool, int):
         data = self._read()
         latest = None
         for r in data["task_reports"]:
-            if (r["user_id"] == int(user_id)
-                    and r["task_id"] == task_id
-                    and r["status"] == "rejected"
-                    and r.get("reviewed_at")):
+            if (r["user_id"] == int(user_id) and r["task_id"] == task_id
+                    and r["status"] == "rejected" and r.get("reviewed_at")):
                 if latest is None or r["reviewed_at"] > latest["reviewed_at"]:
                     latest = r
         if not latest:
@@ -151,21 +134,12 @@ class JsonRepository:
     def has_pending_for(self, user_id, task_id):
         data = self._read()
         for r in data["task_reports"]:
-            if (r["user_id"] == int(user_id)
-                    and r["task_id"] == task_id
-                    and r["status"] == "pending"):
+            if r["user_id"] == int(user_id) and r["task_id"] == task_id and r["status"] == "pending":
                 return True
         return False
 
-    # ---------- purchases ----------
-    def add_purchase(self, user_id, item_name, price):
+    def add_purchase(self, purchase: Purchase):
         data = self._read()
-        pid = self._next_id(data, "purchase_id")
-        data["purchases"].append({
-            "id": pid,
-            "user_id": int(user_id),
-            "item_name": item_name,
-            "price": price,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        })
+        purchase.id = self._next_id(data, "purchase_id")
+        data["purchases"].append(asdict(purchase))
         self._write(data)

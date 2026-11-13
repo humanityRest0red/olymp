@@ -1,12 +1,5 @@
-import sqlite3
-import time
-from datetime import datetime
-
-from domain import Student
-
-
 class SqlRepository:
-    def __init__(self, path: str):
+    def __init__(self, path: str = SQL_PATH):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init_tables()
@@ -22,9 +15,9 @@ class SqlRepository:
                 balance    INTEGER DEFAULT 0,
                 level      TEXT DEFAULT 'Нуб',
                 xp         INTEGER DEFAULT 0,
-                xp_next    INTEGER DEFAULT 100
+                xp_next    INTEGER DEFAULT 100,
+                username   TEXT
             );
-
             CREATE TABLE IF NOT EXISTS task_reports (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER NOT NULL,
@@ -37,7 +30,6 @@ class SqlRepository:
                 created_at  TEXT NOT NULL,
                 reviewed_at TEXT
             );
-
             CREATE TABLE IF NOT EXISTS purchases (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER NOT NULL,
@@ -46,24 +38,26 @@ class SqlRepository:
                 created_at  TEXT NOT NULL
             );
         """)
+        # Миграция для старых баз (добавление username)
+        try:
+            self.conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
-    def get_student_by_id(self, user_id: int) -> Student:
+    def get_user(self, user_id) -> Student | None:
         cur = self.conn.execute("SELECT * FROM users WHERE user_id = ?", (int(user_id),))
         row = cur.fetchone()
-        if row is None:
-            return None
-        return Student(
-            user_id=row["user_id"], first_name=row["first_name"],
-            last_name=row["last_name"], school=row["school"],
-            class_name=row["class"], balance=row["balance"],
-            level=row["level"], xp=row["xp"], xp_next=row["xp_next"],
-        )
+        if row:
+            d = dict(row)
+            d['class_name'] = d.pop('class')
+            return Student(**d)
+        return None
 
-    def save_student(self, user: Student):
+    def save_user(self, user: Student):
         self.conn.execute('''
-            INSERT INTO users (user_id, first_name, last_name, school, class, balance, level, xp, xp_next)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            INSERT INTO users (user_id, first_name, last_name, school, class, balance, level, xp, xp_next, username)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
                 first_name = excluded.first_name,
                 last_name  = excluded.last_name,
@@ -72,65 +66,72 @@ class SqlRepository:
                 balance    = excluded.balance,
                 level      = excluded.level,
                 xp         = excluded.xp,
-                xp_next    = excluded.xp_next
+                xp_next    = excluded.xp_next,
+                username   = excluded.username
         ''', (
-            int(user.user_id), user.first_name, user.last_name,
-            user.school, user.class_name,
-            user.balance, user.level,
-            user.xp, user.xp_next,
+            user.user_id, user.first_name, user.last_name,
+            user.school, user.class_name, user.balance,
+            user.level, user.xp, user.xp_next, user.username
         ))
         self.conn.commit()
 
-    def update_balance(self, user_id, delta):
-        self.conn.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?",
-                          (delta, int(user_id)))
-        self.conn.commit()
+    def update_user(self, user: Student):
+        self.save_user(user)
 
-    def update_progress(self, user_id, add_xp: int, add_balance: int = 0):
-        user = self.get_student_by_id(user_id)
-        if not user:
-            return
-        xp = user.xp + add_xp
-        balance = user.balance + add_balance
-        level, xp, xp_next = self._calc_level(xp)
-        self.conn.execute(
-            "UPDATE users SET xp=?, balance=?, level=?, xp_next=? WHERE user_id=?",
-            (xp, balance, level, xp_next, int(user_id))
-        )
-        self.conn.commit()
+    def get_top_balance(self, limit=10) -> List[Student]:
+        cur = self.conn.execute("SELECT * FROM users ORDER BY balance DESC LIMIT ?", (limit,))
+        res = []
+        for r in cur.fetchall():
+            d = dict(r)
+            d['class_name'] = d.pop('class')
+            res.append(Student(**d))
+        return res
 
-    @staticmethod
-    def _calc_level(xp):
-        if xp < 100:
-            return "Нуб", xp, 100
-        if xp < 1000:
-            return "Про", xp, 1000
-        return "Хакер", xp, 5000
+    def get_top_tasks(self, limit=10) -> List[tuple]:
+        cur = self.conn.execute("""
+            SELECT u.*, COUNT(tr.id) as completed_tasks 
+            FROM users u 
+            JOIN task_reports tr ON u.user_id = tr.user_id 
+            WHERE tr.status = 'approved' 
+            GROUP BY u.user_id 
+            ORDER BY completed_tasks DESC 
+            LIMIT ?
+        """, (limit,))
+        res = []
+        for r in cur.fetchall():
+            d = dict(r)
+            d['class_name'] = d.pop('class')
+            count = d.pop('completed_tasks')
+            res.append((Student(**d), count))
+        return res
 
-    def create_report(self, user_id, task_id, task_name, report_type, report_text=None, report_file=None):
-        now = datetime.now().isoformat(timespec="seconds")
+    def create_report(self, report: TaskReport) -> int:
         cur = self.conn.execute('''
-            INSERT INTO task_reports (user_id, task_id, task_name, report_type, report_text, report_file, status, created_at)
-            VALUES (?,?,?,?,?,?, 'pending', ?)
-        ''', (int(user_id), task_id, task_name, report_type, report_text, report_file, now))
+            INSERT INTO task_reports (user_id, task_id, task_name, report_type, report_text, report_file, status, created_at, reviewed_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        ''', (
+            report.user_id, report.task_id, report.task_name,
+            report.report_type, report.report_text, report.report_file,
+            report.status, report.created_at, report.reviewed_at
+        ))
         self.conn.commit()
         return cur.lastrowid
 
-    def get_report(self, report_id):
+    def get_report(self, report_id) -> TaskReport | None:
         cur = self.conn.execute("SELECT * FROM task_reports WHERE id = ?", (int(report_id),))
         row = cur.fetchone()
-        return dict(row) if row else None
+        return TaskReport(**dict(row)) if row else None
 
-    def get_pending_reports(self):
+    def get_pending_reports(self) -> List[TaskReport]:
         cur = self.conn.execute("SELECT * FROM task_reports WHERE status='pending' ORDER BY id DESC")
-        return [dict(r) for r in cur.fetchall()]
+        return [TaskReport(**dict(r)) for r in cur.fetchall()]
 
-    def get_report_history(self, limit=50):
+    def get_report_history(self, limit=50) -> List[TaskReport]:
         cur = self.conn.execute(
             "SELECT * FROM task_reports WHERE status != 'pending' ORDER BY id DESC LIMIT ?",
             (limit,)
         )
-        return [dict(r) for r in cur.fetchall()]
+        return [TaskReport(**dict(r)) for r in cur.fetchall()]
 
     def set_report_status(self, report_id, status: str):
         now = datetime.now().isoformat(timespec="seconds")
@@ -157,10 +158,9 @@ class SqlRepository:
         )
         return cur.fetchone() is not None
 
-    def add_purchase(self, user_id, item_name, price):
-        now = datetime.now().isoformat(timespec="seconds")
+    def add_purchase(self, purchase: Purchase):
         self.conn.execute(
             "INSERT INTO purchases (user_id, item_name, price, created_at) VALUES (?,?,?,?)",
-            (int(user_id), item_name, price, now)
+            (purchase.user_id, purchase.item_name, purchase.price, purchase.created_at)
         )
         self.conn.commit()

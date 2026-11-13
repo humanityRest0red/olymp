@@ -1,14 +1,13 @@
 """MAX implementation of the Olymp school exchange bot (long polling)."""
+from datetime import datetime
 import json
 import logging
-import time
-from datetime import datetime
-
 import requests
+import time
 
 from domain import Student
 from repository.repo_interface import RepositoryInterface
-from .settings import SCHOOLS, SCHOOL_PAGE_SIZE, SHOP_ITEMS, TASKS
+from ..constants import SCHOOLS, SCHOOL_PAGE_SIZE, SHOP_ITEMS, TASKS
 
 LOG = logging.getLogger(__name__)
 API = 'https://platform-api2.max.ru'

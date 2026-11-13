@@ -12,11 +12,9 @@ class Student:
     level: str = "Нуб"
     xp: int = 0
     xp_next: int = 100
+    username: str | None = None
 
-    def change_balance(self, delta: int) -> None:
-        self.balance += delta
-
-    def add_progress(self, add_xp: int, add_balance: int) -> None:
+    def update_progress(self, add_xp: int, add_balance: int = 0):
         self.xp += add_xp
         self.balance += add_balance
         if self.xp < 100:
