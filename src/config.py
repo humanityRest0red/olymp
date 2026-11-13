@@ -1,17 +1,18 @@
+
 import configparser
 from dataclasses import dataclass
 
 
 @dataclass
-class Telegram:
+class MaxConfig:
     token: str
-    admin_chat_id: int
+    admin_user_id: int
     admin_username: str
 
 
 @dataclass
 class Config:
-    telegram: Telegram
+    max: MaxConfig
     json_filepath: str
     sqlite_filepath: str
 
@@ -20,16 +21,22 @@ def read_config(path: str) -> Config:
     parser = configparser.ConfigParser()
 
     if not parser.read(path, encoding="utf-8"):
-        raise FileNotFoundError(f"Не удалось прочитать конфиг: {path}")
-
-    telegram = Telegram(
-        token=parser["telegram"]["token"],
-        admin_chat_id=parser.getint("telegram", "admin_chat_id"),
-        admin_username=parser["telegram"]["admin_username"],
-    )
+        raise FileNotFoundError(
+            f"Не удалось прочитать конфиг: {path}"
+        )
 
     return Config(
-        telegram=telegram,
+        max=MaxConfig(
+            token=parser["max"]["token"],
+            admin_user_id=parser.getint(
+                "max", "admin_user_id"
+            ),
+            admin_username=parser.get(
+                "max",
+                "admin_username",
+                fallback="администратор"
+            ),
+        ),
         json_filepath=parser["files"]["json_filepath"],
         sqlite_filepath=parser["files"]["sqlite_filepath"],
     )
