@@ -1,23 +1,25 @@
-from bot.bot_interface import BotInterface
-from bot.telegram import TelebotApi
+
+import logging
+
+from bot.max import MaxBotApi
 from repository.json import JsonRepository
-from config import Config, read_config
+from config import read_config
 
 
 def main():
-    config_path ="config.ini"
-    config = read_config(config_path)
+    logging.basicConfig(level=logging.INFO)
 
+    config = read_config("config.ini")
     repo = JsonRepository(config.json_filepath)
-    # repo = SqlRepository(config.sqlite_filepath)
 
-    service: BotInterface = TelebotApi(
-        config.telegram.token,
-        config.telegram.admin_chat_id,
-        config.telegram.admin_username,
+    bot = MaxBotApi(
+        config.max.token,
+        config.max.admin_user_id,
+        config.max.admin_username,
         repo,
     )
-    service.run()
+
+    bot.run()
 
 
 if __name__ == "__main__":
